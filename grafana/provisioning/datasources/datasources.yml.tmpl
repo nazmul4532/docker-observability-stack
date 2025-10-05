@@ -1,0 +1,27 @@
+apiversion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: ${PROMETHEUS_DS_URL}
+    isDefault: true
+  - name: Loki
+    type: loki
+    access: proxy
+    url: ${LOKI_DS_URL}
+  - name: Tempo
+    type: tempo
+    access: proxy
+    url: ${TEMPO_DS_URL}
+    jsonData:
+      httpMethod: GET
+      tracesToLogsV2:
+        datasourceUid: "Loki"
+        spanStartTimeShift: "-10m"
+        spanEndTimeShift: "10m"
+        filterByTraceID: true
+        filterBySpanID: false
+      lokiSearch:
+        datasourceUid: "Loki"
+      nodeGraph:
+        enabled: true

@@ -1,0 +1,50 @@
+auth_enabled: false
+
+server:
+  http_listen_port: ${LOKI_HTTP_PORT}
+  grpc_listen_port: ${LOKI_GRPC_PORT}
+
+common:
+  path_prefix: /loki
+  replication_factor: 1
+
+  # << Add this to avoid Consul >>
+  ring:
+    kvstore:
+      store: inmemory
+
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: boltdb-shipper
+      object_store: filesystem
+      schema: v11
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  boltdb_shipper:
+    active_index_directory: /loki/index
+    cache_location: /loki/boltdb-cache
+    shared_store: filesystem
+  filesystem:
+    directory: /loki/chunks
+
+limits_config:
+  ingestion_rate_mb: 8
+  ingestion_burst_size_mb: 16
+  max_streams_per_user: 0
+  max_global_streams_per_user: 0
+
+chunk_store_config:
+  max_look_back_period: 0s
+
+table_manager:
+  retention_deletes_enabled: false
+  retention_period: 0s

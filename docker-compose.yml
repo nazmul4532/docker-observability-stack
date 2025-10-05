@@ -1,0 +1,173 @@
+# -----------------------------------------------------------------------------
+# Mini Observability Stack (template-swap via envsubst)
+# Services: Grafana, Prometheus, Loki, Tempo, OTel Collector
+# - Renders templates from ./grafana ./prometheus into ./_rendered
+# -----------------------------------------------------------------------------
+
+services:
+  # 1) Render templates once, then other services mount the rendered folders
+  init-configs:
+    image: alpine:3.20
+    container_name: init-configs
+    command: |
+      sh -c '
+        set -euo pipefail
+
+        apk add --no-cache gettext >/dev/null
+
+        echo "== SOURCE CHECKS =="
+        echo "[grafana src]";    ls -l /templates/grafana/provisioning/datasources || true
+        echo "[prometheus src]"; ls -l /templates/prometheus || true
+
+        # Ensure rendered dirs exist
+        mkdir -p /rendered/grafana/datasources /rendered/prometheus
+
+        # Fail fast if templates missing
+        [ -f /templates/grafana/provisioning/datasources/datasources.yml.tmpl ] || { echo "MISSING: /templates/grafana/provisioning/datasources/datasources.yml.tmpl" >&2; exit 1; }
+        [ -f /templates/prometheus/prometheus.yml.tmpl ] || { echo "MISSING: /templates/prometheus/prometheus.yml.tmpl" >&2; exit 1; }
+
+        echo "== RENDERING (to temp then move) =="
+        TMP1=$$(mktemp); TMP2=$$(mktemp)
+        envsubst < /templates/grafana/provisioning/datasources/datasources.yml.tmpl > "$$TMP1"
+        envsubst < /templates/prometheus/prometheus.yml.tmpl                       > "$$TMP2"
+
+        # Ensure non-empty
+        [ -s "$$TMP1" ] || { echo "ERROR: rendered grafana file is empty"; exit 1; }
+        [ -s "$$TMP2" ] || { echo "ERROR: rendered prometheus file is empty"; exit 1; }
+
+        mv -f "$$TMP1" /rendered/grafana/datasources/datasources.yml
+        mv -f "$$TMP2" /rendered/prometheus/prometheus.yml
+
+        echo "== RENDERED OUTPUTS =="
+        echo "[grafana out]";    ls -l /rendered/grafana/datasources || true
+        echo "[prometheus out]"; ls -l /rendered/prometheus || true
+        echo "Templates rendered OK."
+      '
+    environment:
+      - PROMETHEUS_PORT=${PROMETHEUS_PORT}
+      - GRAFANA_PORT=${GRAFANA_PORT}
+      - LOKI_PORT=${LOKI_PORT}
+      - OTEL_GRPC_PORT=${OTEL_GRPC_PORT}
+      - OTEL_HTTP_PORT=${OTEL_HTTP_PORT}
+      - OTEL_PROM_EXPORTER_PORT=${OTEL_PROM_EXPORTER_PORT}
+      - LOKI_HTTP_PORT=${LOKI_HTTP_PORT}
+      - LOKI_GRPC_PORT=${LOKI_GRPC_PORT}
+      - TEMPO_HTTP_PORT=${TEMPO_HTTP_PORT}
+      - TEMPO_OTLP_GRPC_PORT=${TEMPO_OTLP_GRPC_PORT}
+      - TEMPO_OTLP_HTTP_PORT=${TEMPO_OTLP_HTTP_PORT}
+      - PROMETHEUS_DS_URL=${PROMETHEUS_DS_URL}
+      - LOKI_DS_URL=${LOKI_DS_URL}
+      - TEMPO_DS_URL=${TEMPO_DS_URL}
+    volumes:
+      - ./grafana/provisioning:/templates/grafana/provisioning:ro
+      - ./prometheus:/templates/prometheus:ro
+      - ./_rendered:/rendered
+    restart: "no"
+
+  # 2) Grafana (mounts rendered datasources)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./_rendered/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      init-configs:
+        condition: service_completed_successfully
+    networks: [observability]
+
+  # 3) Prometheus (mount rendered directory)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    command: >
+      --config.file=/etc/prometheus/prometheus.yml
+      --storage.tsdb.retention.time=15d
+      --storage.tsdb.path=/prometheus
+      --web.enable-lifecycle
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./_rendered/prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      init-configs:
+        condition: service_completed_successfully
+    networks: [observability]
+
+  # 4) Loki (env-driven config with expand-env)
+  loki:
+    image: grafana/loki:2.9.6
+    container_name: loki
+    restart: unless-stopped
+    user: "0:0"  # avoid FS permission issues on /loki/*
+    command:
+      - -config.file=/etc/loki/config.yml
+      - -config.expand-env=true
+    environment:
+      - LOKI_HTTP_PORT=${LOKI_HTTP_PORT:-3100}
+      - LOKI_GRPC_PORT=${LOKI_GRPC_PORT:-9096}
+    ports:
+      - "${LOKI_PORT:-3100}:${LOKI_HTTP_PORT:-3100}"
+    volumes:
+      - ./loki/config.yml:/etc/loki/config.yml:ro
+      - loki_data:/loki
+    networks: [observability]
+  
+  # 5) Tempo (env-driven config with expand-env)
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: tempo
+    restart: unless-stopped
+    command:
+      - -config.file=/etc/tempo/tempo.yml
+      - -config.expand-env=true
+    environment:
+      - TEMPO_HTTP_PORT=${TEMPO_HTTP_PORT:-3200}
+      - TEMPO_OTLP_GRPC_PORT=${TEMPO_OTLP_GRPC_PORT:-4317}
+      - TEMPO_OTLP_HTTP_PORT=${TEMPO_OTLP_HTTP_PORT:-4318}
+    volumes:
+      - ./tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo_data:/var/tempo
+    networks: [observability]
+
+
+  # 6) OTel Collector (reads env in YAML natively)
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    container_name: otel-collector
+    restart: unless-stopped
+    environment:
+      - OTEL_GRPC_PORT=${OTEL_GRPC_PORT:-4317}
+      - OTEL_HTTP_PORT=${OTEL_HTTP_PORT:-4318}
+      - OTEL_PROM_EXPORTER_PORT=${OTEL_PROM_EXPORTER_PORT:-8889}
+      - LOKI_HTTP_PORT=${LOKI_HTTP_PORT:-3100}
+      - TEMPO_OTLP_GRPC_PORT=${TEMPO_OTLP_GRPC_PORT:-4317}
+    command: ["--config","/etc/otelcol/config.yaml"]
+    ports:
+      - "${OTEL_GRPC_PORT:-4317}:${OTEL_GRPC_PORT:-4317}"
+      - "${OTEL_HTTP_PORT:-4318}:${OTEL_HTTP_PORT:-4318}"
+    volumes:
+      - ./otel-collector/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    depends_on:
+      - loki
+      - tempo
+    networks: [observability]
+
+networks:
+  observability:
+    name: observability
+
+volumes:
+  grafana_data: {}
+  prometheus_data: {}
+  loki_data: {}
+  tempo_data: {}

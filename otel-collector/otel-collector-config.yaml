@@ -1,0 +1,66 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:${OTEL_GRPC_PORT}
+      http:
+        endpoint: 0.0.0.0:${OTEL_HTTP_PORT}
+
+processors:
+  batch:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 25
+
+exporters:
+  # Logs -> Loki (with queue/retry)
+  loki:
+    endpoint: http://loki:${LOKI_HTTP_PORT}/loki/api/v1/push
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 10s
+      max_elapsed_time: 0s
+
+  # Traces -> Tempo (with queue/retry)
+  otlp/tempo:
+    endpoint: tempo:${TEMPO_OTLP_GRPC_PORT}
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 10s
+      max_elapsed_time: 0s
+
+  # Metrics -> expose for Prometheus to scrape (/metrics)
+  prometheus:
+    endpoint: 0.0.0.0:${OTEL_PROM_EXPORTER_PORT}
+    enable_open_metrics: true
+
+service:
+  telemetry:
+    logs:
+      level: INFO
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [loki]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]

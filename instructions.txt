@@ -1,0 +1,18 @@
+docker compose up -d
+
+docker compose down -v
+rm -rf _rendered
+mkdir -p _rendered/grafana/datasources _rendered/prometheus
+
+# Inspect logs if any restarts:
+docker logs loki --tail=200
+docker logs tempo --tail=200
+docker logs otel-collector --tail=200
+
+# Health checks
+curl -s http://localhost:${GRAFANA_PORT}/api/health
+curl -s http://localhost:${PROMETHEUS_PORT}/-/ready
+curl -s http://localhost:${LOKI_PORT}/ready
+curl -s http://localhost:${TEMPO_HTTP_PORT}/status/buildinfo
+curl -s http://localhost:${OTEL_PROM_EXPORTER_PORT}/metrics | head -20
+
