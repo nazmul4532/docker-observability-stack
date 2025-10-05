@@ -1,3 +1,6 @@
+#Turning it ON
+rm -rf _rendered
+mkdir -p _rendered/grafana/datasources _rendered/prometheus
 docker compose up -d
 
 docker compose down -v
