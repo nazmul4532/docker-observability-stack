@@ -16,3 +16,26 @@ curl -s http://localhost:${LOKI_PORT}/ready
 curl -s http://localhost:${TEMPO_HTTP_PORT}/status/buildinfo
 curl -s http://localhost:${OTEL_PROM_EXPORTER_PORT}/metrics | head -20
 
+
+
+#Deployed test app using
+docker stop spring-jvm-app 2>/dev/null || true
+docker rm spring-jvm-app 2>/dev/null || true
+
+docker run -d \
+  --name spring-jvm-app \
+  --platform=linux/amd64 \
+  --restart unless-stopped \
+  --network observability \
+  -p 8080:8080 \
+  -e OTEL_SERVICE_NAME="spring-jvm-app" \
+  -e OTEL_TRACES_SAMPLER="always_on" \
+  -e OTEL_TRACES_EXPORTER="otlp" \
+  -e OTEL_METRICS_EXPORTER="otlp" \
+  -e OTEL_LOGS_EXPORTER="otlp" \
+  -e OTEL_EXPORTER_OTLP_PROTOCOL="grpc" \
+  -e OTEL_EXPORTER_OTLP_ENDPOINT="http://otel-collector:4317" \
+  -e JAVA_TOOL_OPTIONS='-javaagent:/otel/opentelemetry-javaagent.jar' \
+  -v "$PWD/otel:/otel:ro" \
+  nazmul4532brainstation/springboot-jvm:latest
+
